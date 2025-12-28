@@ -592,6 +592,8 @@ frappe.ui.form.on("Payment Entry", {
 	paid_from: function (frm) {
 		if (frm.set_party_account_based_on_party) return;
 
+		frm.events.set_company_bank_account(frm);
+
 		frm.events.set_account_currency_and_balance(
 			frm,
 			frm.doc.paid_from,
@@ -608,6 +610,8 @@ frappe.ui.form.on("Payment Entry", {
 
 	paid_to: function (frm) {
 		if (frm.set_party_account_based_on_party) return;
+
+		frm.events.set_company_bank_account(frm);
 
 		frm.events.set_account_currency_and_balance(
 			frm,
@@ -1298,15 +1302,14 @@ frappe.ui.form.on("Payment Entry", {
 		let row = (frm.doc.deductions || []).find((t) => t.is_exchange_gain_loss);
 
 		if (!row) {
-			const response = await get_company_defaults(frm.doc.company);
-
+			const company_defaults = frappe.get_doc(":Company", frm.doc.company);
 			const account =
-				response.message?.[account_fieldname] ||
+				company_defaults?.[account_fieldname] ||
 				(await prompt_for_missing_account(frm, account_fieldname));
 
 			row = frm.add_child("deductions");
 			row.account = account;
-			row.cost_center = response.message?.cost_center;
+			row.cost_center = company_defaults?.cost_center;
 			row.is_exchange_gain_loss = 1;
 		}
 
@@ -1350,6 +1353,8 @@ frappe.ui.form.on("Payment Entry", {
 	},
 
 	bank_account: function (frm) {
+		if (frm.set_company_bank_account_based_on_coa) return;
+
 		const field = frm.doc.payment_type == "Pay" ? "paid_from" : "paid_to";
 		if (frm.doc.bank_account && ["Pay", "Receive"].includes(frm.doc.payment_type)) {
 			frappe.call({
@@ -1386,6 +1391,34 @@ frappe.ui.form.on("Payment Entry", {
 				},
 			});
 		}
+	},
+
+	set_company_bank_account: function (frm) {
+		if (!["Pay", "Receive"].includes(frm.doc.payment_type)) return;
+
+		const field = frm.doc.payment_type == "Pay" ? "paid_from" : "paid_to";
+
+		if (!frm.doc.company || !frm.doc[field]) return;
+
+		frm.set_company_bank_account_based_on_coa = true;
+
+		frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Bank Account",
+				filters: {
+					company: frm.doc.company,
+					account: frm.doc[field],
+					disabled: 0,
+				},
+				fieldname: ["name"],
+			},
+			callback: async function (r) {
+				if (r.message) await frm.set_value("bank_account", r.message.name);
+
+				frm.set_company_bank_account_based_on_coa = false;
+			},
+		});
 	},
 
 	sales_taxes_and_charges_template: function (frm) {
@@ -1487,18 +1520,14 @@ frappe.ui.form.on("Payment Entry", {
 				"Can refer row only if the charge type is 'On Previous Row Amount' or 'Previous Row Total'"
 			);
 			d.row_id = "";
-		} else if (
-			(d.charge_type == "On Previous Row Amount" || d.charge_type == "On Previous Row Total") &&
-			d.row_id
-		) {
+		} else if (d.charge_type == "On Previous Row Amount" || d.charge_type == "On Previous Row Total") {
 			if (d.idx == 1) {
 				msg = __(
 					"Cannot select charge type as 'On Previous Row Amount' or 'On Previous Row Total' for first row"
 				);
 				d.charge_type = "";
 			} else if (!d.row_id) {
-				msg = __("Please specify a valid Row ID for row {0} in table {1}", [d.idx, __(d.doctype)]);
-				d.row_id = "";
+				d.row_id = d.idx - 1;
 			} else if (d.row_id && d.row_id >= d.idx) {
 				msg = __(
 					"Cannot refer row number greater than or equal to current row number for this Charge type"

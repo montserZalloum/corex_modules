@@ -139,6 +139,7 @@ class AssetCapitalization(StockController):
 		self.make_gl_entries()
 		self.repost_future_sle_and_gle()
 		self.restore_consumed_asset_items()
+		self.update_target_asset()
 
 	def set_title(self):
 		self.title = self.target_asset_name or self.target_item_name or self.target_item_code
@@ -362,6 +363,7 @@ class AssetCapitalization(StockController):
 				"voucher_no": self.name,
 				"company": self.company,
 				"allow_zero_valuation": cint(item.get("allow_zero_valuation_rate")),
+				"serial_and_batch_bundle": item.serial_and_batch_bundle,
 			}
 		)
 
@@ -607,8 +609,12 @@ class AssetCapitalization(StockController):
 		total_target_asset_value = flt(self.total_value, self.precision("total_value"))
 
 		asset_doc = frappe.get_doc("Asset", self.target_asset)
-		asset_doc.gross_purchase_amount += total_target_asset_value
-		asset_doc.purchase_amount += total_target_asset_value
+		if self.docstatus == 2:
+			asset_doc.gross_purchase_amount -= total_target_asset_value
+			asset_doc.purchase_amount -= total_target_asset_value
+		else:
+			asset_doc.gross_purchase_amount += total_target_asset_value
+			asset_doc.purchase_amount += total_target_asset_value
 		asset_doc.set_status("Work In Progress")
 		asset_doc.flags.ignore_validate = True
 		asset_doc.save()
@@ -758,6 +764,7 @@ def get_consumed_stock_item_details(args):
 				"company": args.company,
 				"serial_no": args.serial_no,
 				"batch_no": args.batch_no,
+				"serial_and_batch_bundle": args.serial_and_batch_bundle,
 			}
 		)
 		out.update(get_warehouse_details(incoming_rate_args))

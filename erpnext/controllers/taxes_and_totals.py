@@ -7,6 +7,7 @@ import json
 import frappe
 from frappe import _, scrub
 from frappe.model.document import Document
+from frappe.query_builder import functions
 from frappe.utils import cint, flt, round_based_on_smallest_currency_fraction
 from frappe.utils.deprecations import deprecated
 
@@ -377,6 +378,9 @@ class calculate_taxes_and_totals:
 			self._calculate()
 
 	def calculate_taxes(self):
+		# reset value from earlier calculations
+		self.grand_total_diff = 0
+
 		doc = self.doc
 		if not doc.get("taxes"):
 			return
@@ -586,7 +590,7 @@ class calculate_taxes_and_totals:
 				self.grand_total_diff = 0
 
 	def calculate_totals(self):
-		grand_total_diff = getattr(self, "grand_total_diff", 0)
+		grand_total_diff = self.grand_total_diff
 
 		if self.doc.get("taxes"):
 			self.doc.grand_total = flt(self.doc.get("taxes")[-1].total) + grand_total_diff
@@ -680,6 +684,41 @@ class calculate_taxes_and_totals:
 				* self.doc.additional_discount_percentage
 				/ 100,
 				self.doc.precision("discount_amount"),
+			)
+
+		discount_amount = self.doc.discount_amount or 0
+		grand_total = self.doc.grand_total
+
+		if self.doc.get("is_return") and self.doc.get("return_against"):
+			doctype = frappe.qb.DocType(self.doc.doctype)
+
+			result = (
+				frappe.qb.from_(doctype)
+				.select(functions.Sum(doctype.discount_amount).as_("total_return_discount"))
+				.where(
+					(doctype.return_against == self.doc.return_against)
+					& (doctype.is_return == 1)
+					& (doctype.docstatus == 1)
+				)
+			).run(as_dict=True)
+
+			total_return_discount = abs(result[0].get("total_return_discount") or 0)
+			discount_amount += total_return_discount
+
+		# validate that discount amount cannot exceed the total before discount
+		if (
+			(grand_total >= 0 and discount_amount > grand_total)
+			or (grand_total < 0 and discount_amount < grand_total)  # returns
+		):
+			frappe.throw(
+				_(
+					"Additional Discount Amount ({discount_amount}) cannot exceed "
+					"the total before such discount ({total_before_discount})"
+				).format(
+					discount_amount=self.doc.get_formatted("discount_amount"),
+					total_before_discount=self.doc.get_formatted("grand_total"),
+				),
+				title=_("Invalid Discount Amount"),
 			)
 
 	def apply_discount_amount(self):
@@ -814,12 +853,11 @@ class calculate_taxes_and_totals:
 					)
 				)
 
-			if self.doc.docstatus.is_draft():
-				if self.doc.get("write_off_outstanding_amount_automatically"):
-					self.doc.write_off_amount = 0
+			if self.doc.get("write_off_outstanding_amount_automatically"):
+				self.doc.write_off_amount = 0
 
-				self.calculate_outstanding_amount()
-				self.calculate_write_off_amount()
+			self.calculate_outstanding_amount()
+			self.calculate_write_off_amount()
 
 	def is_internal_invoice(self):
 		"""
